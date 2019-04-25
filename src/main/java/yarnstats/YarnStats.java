@@ -3,18 +3,12 @@ package yarnstats;
 import cuchaz.enigma.analysis.ParsedJar;
 import cuchaz.enigma.analysis.index.BridgeMethodIndex;
 import cuchaz.enigma.analysis.index.JarIndex;
-import net.fabricmc.mappings.EntryTriple;
-import net.fabricmc.mappings.Mappings;
-import net.fabricmc.mappings.MappingsProvider;
-import net.fabricmc.mappings.MethodEntry;
-import org.objectweb.asm.ClassReader;
-import org.objectweb.asm.ClassVisitor;
-import org.objectweb.asm.MethodVisitor;
-import org.objectweb.asm.Opcodes;
+import net.fabricmc.mappings.*;
+import org.objectweb.asm.*;
 
-import java.io.*;
+import java.io.FileInputStream;
+import java.io.InputStream;
 import java.lang.reflect.Field;
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -27,6 +21,7 @@ public class YarnStats {
         String mappingsTiny = args[1];
 
         Set<String> syntheticMethods = new HashSet<>();
+        Set<String> syntheticFields = new HashSet<>();
         try (JarFile jarFile = new JarFile(minecraftJar)) {
             Enumeration<JarEntry> entries = jarFile.entries();
             while (entries.hasMoreElements()) {
@@ -44,6 +39,15 @@ public class YarnStats {
                         }
 
                         return super.visitMethod(access, name, descriptor, signature, exceptions);
+                    }
+
+                    @Override
+                    public FieldVisitor visitField(int access, String name, String descriptor, String signature, Object value) {
+                        if ((access & Opcodes.ACC_SYNTHETIC) != 0) {
+                            syntheticFields.add(className + ":" + name + descriptor);
+                        }
+
+                        return super.visitField(access, name, descriptor, signature, value);
                     }
                 }, 0);
             }
@@ -68,8 +72,8 @@ public class YarnStats {
             mappings = MappingsProvider.readTinyMappings(stream);
         }
 
-        Map<String, Integer> unmappedCount = new LinkedHashMap<>();
-        Map<String, Integer> mappedCount = new LinkedHashMap<>();
+        int totalMethods = 0;
+        int mappedMethods = 0;
         Set<String> seenNames = new HashSet<>();
         for (MethodEntry methodEntry : mappings.getMethodEntries()) {
             EntryTriple intermediary = methodEntry.get("intermediary");
@@ -100,148 +104,78 @@ public class YarnStats {
                 mapped = true;
             }
 
-            StringBuilder partialName = new StringBuilder();
-            for (String part : (named.getOwner().split("\\$")[0] + "/ ").split("/")) {
+            totalMethods++;
+            if (mapped) {
+                mappedMethods++;
+            }
+        }
+
+        int totalFields = 0;
+        int mappedFields = 0;
+        for (FieldEntry fieldEntry : mappings.getFieldEntries()) {
+            EntryTriple intermediary = fieldEntry.get("intermediary");
+            if (!seenNames.add(intermediary.getName())) {
+                continue;
+            }
+
+            if (!intermediary.getName().startsWith("field_")) {
+                continue; // unobfuscated name
+            }
+
+            EntryTriple original = fieldEntry.get("official");
+            String key = original.getOwner() + ":" + original.getName();
+            if (syntheticFields.contains(key)) {
+                continue;
+            }
+
+            EntryTriple named = fieldEntry.get("named");
+
+            if (!("/" + named.getOwner()).startsWith(ROOT_PACKAGE)) {
+                continue;
+            }
+
+            boolean mapped = !named.getName().equals(intermediary.getName());
+
+            if (original.getOwner().startsWith("net/minecraft/realms")) {
+                // https://github.com/FabricMC/Enigma/issues/121
+                mapped = true;
+            }
+
+            totalFields++;
+            if (mapped) {
+                mappedFields++;
+            }
+        }
+
+        int totalClasses = 0;
+        int mappedClasses = 0;
+        int totalTopLevelClasses = 0;
+        int mappedTopLevelClasses = 0;
+        for (ClassEntry classEntry : mappings.getClassEntries()) {
+            String named = classEntry.get("named");
+            int lastDollar = named.lastIndexOf('$');
+            if (lastDollar != -1) {
+                named = named.substring(lastDollar + 1);
+            }
+
+            boolean mapped = !named.contains("class_");
+
+            totalClasses++;
+            if (mapped) {
+                mappedClasses++;
+            }
+
+            if (lastDollar == -1) {
+                totalTopLevelClasses++;
                 if (mapped) {
-                    mappedCount.put(partialName.toString(), mappedCount.getOrDefault(partialName.toString(), 0) + 1);
-                } else {
-                    unmappedCount.put(partialName.toString(), unmappedCount.getOrDefault(partialName.toString(), 0) + 1);
+                    mappedTopLevelClasses++;
                 }
-                partialName.append("/").append(part);
             }
         }
 
-        StringBuilder partialName = new StringBuilder();
-        for (String part : ROOT_PACKAGE.substring(1, ROOT_PACKAGE.length() - 1).split("/")) {
-            unmappedCount.remove(partialName.toString());
-            partialName.append("/").append(part);
-        }
-
-        String[] last = {""};
-        int[] lastLevel = {0};
-        int[] indentLevel = {0};
-        boolean[] first = {true};
-        StringBuilder s = new StringBuilder();
-        unmappedCount
-                .keySet()
-                .stream()
-                .sorted((a, b) -> {
-                    if (a.equals(b)) {
-                        return 0;
-                    }
-
-                    if (a.length() < ROOT_PACKAGE.length() || b.length() < ROOT_PACKAGE.length()) {
-                        return a.compareToIgnoreCase(b);
-                    }
-
-                    a = a.substring(ROOT_PACKAGE.length());
-                    b = b.substring(ROOT_PACKAGE.length());
-
-                    if (a.startsWith("class_") ^ b.startsWith("class_")) {
-                        return a.startsWith("class_") ? 1 : -1;
-                    }
-
-                    boolean aUpper = !a.substring(0, 1).toLowerCase().equals(a.substring(0, 1));
-                    boolean bUpper = !b.substring(0, 1).toLowerCase().equals(b.substring(0, 1));
-                    if (aUpper ^ bUpper) {
-                        return aUpper ? 1 : -1;
-                    }
-
-                    return a.compareToIgnoreCase(b);
-                })
-                .forEachOrdered(packageName -> {
-                    int prefixSize = findCommonPrefixSize(last[0].split("/"), packageName.split("/"));
-                    int level = countCharacters(packageName.substring(0, prefixSize), '/');
-
-                    if (lastLevel[0] < level) {
-                        indentLevel[0]++;
-                        s.append(", children: [\n");
-                    } else if (!first[0]) {
-                        while (lastLevel[0] > level) {
-                            lastLevel[0]--;
-                            s.append("}\n");
-
-                            for (int i = 1; i < indentLevel[0]; i++) {
-                                s.append("    ");
-                            }
-
-                            s.append("]");
-                            indentLevel[0]--;
-                        }
-                        s.append("},\n");
-                    }
-
-                    for (int i = 0; i < indentLevel[0]; i++) {
-                        s.append("    ");
-                    }
-
-                    int mapped = mappedCount.getOrDefault(packageName, 0);
-                    int unmapped = unmappedCount.getOrDefault(packageName, 0);
-                    int total = unmapped + mapped;
-
-                    s.append("{name: \"")
-                     .append(packageName.substring(prefixSize == 0 ? 0 : prefixSize + 1))
-                     .append("\", value: ")
-                     .append(unmapped);
-
-                    first[0] = false;
-                    lastLevel[0] = level;
-                    last[0] = packageName;
-                });
-        while (indentLevel[0] > 0) {
-            indentLevel[0]--;
-            s.append("}\n");
-
-            for (int i = 0; i < indentLevel[0]; i++) {
-                s.append("    ");
-            }
-
-            s.append("]");
-        }
-        s.append("}\n");
-
-        try (InputStream is = YarnStats.class.getResourceAsStream("/template.html");
-             OutputStream os = new FileOutputStream(new File("methods.html"))) {
-            String result = toString(is, "UTF-8")
-                    .replace("{{type}}", "methods")
-                    .replace("{{data}}", s.toString());
-            os.write(result.getBytes(StandardCharsets.UTF_8));
-        }
-    }
-
-    private static String toString(InputStream is, String encoding) throws IOException {
-        ByteArrayOutputStream os = new ByteArrayOutputStream();
-        byte[] buffer = new byte[1024];
-        int length = 0;
-        while ((length = is.read(buffer)) != -1) {
-            os.write(buffer, 0, length);
-        }
-        return os.toString(encoding);
-    }
-
-    private static int countCharacters(String s, char c) {
-        int n = 0;
-
-        for (int i = 0; i < s.length(); i++) {
-            if (s.charAt(i) == c) {
-                n++;
-            }
-        }
-
-        return n;
-    }
-
-    private static int findCommonPrefixSize(String[] a, String[] b) {
-        int shortestLength = Math.min(a.length, b.length);
-        int size = 0;
-        for (int i = 0; i < shortestLength; i++) {
-            if (!a[i].equals(b[i])) {
-                return size - 1;
-            }
-
-            size += a[i].length() + 1;
-        }
-
-        return size - 1;
+        System.out.println(mappedClasses + " / " + totalClasses + String.format(" (%.2f%%)", (double) mappedTopLevelClasses / totalTopLevelClasses * 100) + " top-level classes are mapped");
+        System.out.println(mappedClasses + " / " + totalClasses + String.format(" (%.2f%%)", (double) mappedClasses / totalClasses * 100) + " classes are mapped");
+        System.out.println(mappedMethods + " / " + totalMethods + String.format(" (%.2f%%)", (double) mappedMethods / totalMethods * 100) + " methods are mapped");
+        System.out.println(mappedFields + " / " + totalFields + String.format(" (%.2f%%)", (double) mappedFields / totalFields * 100) + " fields are mapped");
     }
 }
