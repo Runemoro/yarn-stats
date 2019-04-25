@@ -1,0 +1,27 @@
+plugins {
+    id 'java'
+    id 'application'
+    id 'com.github.johnrengelman.shadow' version '5.0.0'
+}
+
+version '1.0-SNAPSHOT'
+
+sourceCompatibility = 1.8
+
+repositories {
+    mavenCentral()
+    maven {
+        name = 'Fabric'
+        url = 'http://maven.modmuss50.me/'
+    }
+}
+
+dependencies {
+    implementation 'net.fabricmc:tiny-mappings-parser:0.1.0.6'
+    implementation 'org.ow2.asm:asm:7.0'
+    implementation 'cuchaz:enigma:0.13.1.97:lib'
+}
+
+application {
+    mainClassName = 'yarnstats.YarnStats'
+}
