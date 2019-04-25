@@ -158,6 +158,10 @@ public class YarnStats {
                 named = named.substring(lastDollar + 1);
             }
 
+            if (Character.isDigit(named.charAt(0))) {
+                continue;
+            }
+
             boolean mapped = !named.contains("class_");
 
             totalClasses++;
@@ -173,7 +177,7 @@ public class YarnStats {
             }
         }
 
-        System.out.println(mappedClasses + " / " + totalClasses + String.format(" (%.2f%%)", (double) mappedTopLevelClasses / totalTopLevelClasses * 100) + " top-level classes are mapped");
+        System.out.println(mappedTopLevelClasses + " / " + totalTopLevelClasses + String.format(" (%.2f%%)", (double) mappedTopLevelClasses / totalTopLevelClasses * 100) + " top-level classes are mapped");
         System.out.println(mappedClasses + " / " + totalClasses + String.format(" (%.2f%%)", (double) mappedClasses / totalClasses * 100) + " classes are mapped");
         System.out.println(mappedMethods + " / " + totalMethods + String.format(" (%.2f%%)", (double) mappedMethods / totalMethods * 100) + " methods are mapped");
         System.out.println(mappedFields + " / " + totalFields + String.format(" (%.2f%%)", (double) mappedFields / totalFields * 100) + " fields are mapped");
